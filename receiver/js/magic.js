@@ -33,6 +33,15 @@ if (!Array.prototype.randomPop) {
     };
 }
 
+if (!Array.prototype.removeItem) {
+    Array.prototype.removeItem = function(item) {
+        var index = this.indexOf(item);
+        if (index == -1) return -1;
+        this.splice(index, 1);
+        return index;
+    }
+}
+
 //taken from https://github.com/mrmcpowned/interdimensionalcable/blob/gh-pages/js/get-video.js#L38
 //because it works..
 var validateAndAdd = function(redditItem, array) {
@@ -143,12 +152,46 @@ window.onYouTubePlayerAPIReady = function() {
     });
 }
 
+function playNextVideo() {
+    var video = getNextVideo();
+    player.loadVideoById(video);
+
+    gameManager.getConnectedPlayers().forEach(function(item) {
+        gameManager.sendGameMessageToPlayer(item.playerId, {
+            "video": video
+        });
+    });
+}
+
 function onPlayerReady(event) {
     //event.target.playVideo();
 }
 
+var next_video_token;
+
 function onPlayerStateChange(event) {
-    //event.target.playVideo();
+    if (event.data == YT.PlayerState.PAUSED) {
+        event.target.playVideo();
+    } else if (event.data == YT.PlayerState.PLAYING) {
+        clearTimeout(next_video_token);
+
+        next_video_token = setTimeout(function() {
+            var video = getNextVideo();
+            player.loadVideoById(video);
+        }, (player.getDuration() * 1000) - 900);
+    } else if (event.data == YT.PlayerState.ENDED) {
+        var last_url = player.getVideoUrl();
+        setTimeout(function() {
+            if (next_video_token == null) {
+                return;
+            }
+            if (last_url !== player.getVideoUrl()) {
+                return;
+            }
+            var video = getNextVideo();
+            player.loadVideoById(video);
+        }, 50);
+    }
 }
 
 function onPlayerError(event) {
@@ -160,7 +203,7 @@ var gameManager;
 var players = [];
 var voteSkips = 0;
 
-window.onload = function() {
+var init = function() {
     var castReceiverManager = cast.receiver.CastReceiverManager.getInstance();
     var appConfig = new cast.receiver.CastReceiverManager.Config();
     appConfig.statusText = 'Preparing Inter-Dimensional Cable...';
@@ -172,24 +215,57 @@ window.onload = function() {
     gameManager = new cast.receiver.games.GameManager(gameConfig);
 
     castReceiverManager.start(appConfig);
+
+    gameManager.updateGameplayState(cast.receiver.games.GameplayState.RUNNING, null);
+
     prepareEvents();
 };
 
 function prepareEvents() {
-    gameManager.onPlayerAvailable = function(event) {
-        players.push(event.playerInfo.playerId);
-        toastr.info(event.playerInfo.playerId + " Joined");
-    };
+    gameManager.addEventListener(
+        cast.receiver.games.EventType.PLAYER_AVAILABLE,
+        function(event) {
+            gameManager.updatePlayerState(event.playerInfo.playerId, cast.receiver.games.PlayerState.PLAYING, null);
+            event.playerInfo.playerData = {
+                name: event.requestExtraMessageData.name
+            };
+
+            players.push(event.playerInfo.playerData);
+            toastr.info(event.requestExtraMessageData.name + " Joined");
+        }
+    );
+
+    gameManager.addEventListener(
+        cast.receiver.games.EventType.PLAYER_QUIT,
+        function(event) {
+            players.removeItem(event.playerInfo.playerData);
+            toastr.info(event.playerInfo.playerData.name + " Quit");
+        });
+
+    gameManager.addEventListener(
+        cast.receiver.games.EventType.PLAYER_DROPPED,
+        function(event) {
+            players.removeItem(event.playerInfo.name);
+            toastr.error(event.playerInfo.playerData.name + " has disconnected!");
+        });
 
     gameManager.addEventListener(cast.receiver.games.EventType.GAME_MESSAGE_RECEIVED,
         function(event) {
-            if (event.requestExtraMessageData == 'voteSkip') {
+            if (event.requestExtraMessageData.action == 'voteSkip') {
                 voteSkips++;
                 if (voteSkips >= players.length / 2) {
                     playNextVideo();
+                    voteSkips = 0;
                 } else {
-                    toastr.info(event.playerInfo.playerId + " voted to skip!");
+                    toastr.info(event.playerInfo.playerData.name + " voted to skip!");
                 }
             }
         });
+}
+
+//main()
+if (document.readyState === "complete") {
+    init();
+} else {
+    window.onload = init;
 }
